@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>学信网</title>
+
+    <!-- PWA 配置 (iOS) -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="学信网">
+    <link rel="apple-touch-icon" href="./logo.png">
+    <link rel="manifest" href="./manifest.json">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #f0f0f0;
+            font-family: -apple-system, "PingFang SC", sans-serif;
+        }
+
+        /* --- 视图容器 --- */
+        .view {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: none; /* 默认隐藏 */
+        }
+        .view.active {
+            display: block;
+        }
+
+        /* --- 1. 首页视图 --- */
+        #home-view {
+            background: #fff;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        #home-view img {
+            width: 100%;
+            display: block;
+            pointer-events: none;
+        }
+
+        /* 隐形扫码按钮 (覆盖在图1右上角) */
+        .scan-trigger-btn {
+            position: absolute;
+            top: 15px; /* 根据实际显示效果微调 */
+            right: 15px; /* 根据实际显示效果微调 */
+            width: 50px;
+            height: 50px;
+            background: rgba(0,0,0,0.01); /* 完全透明 */
+            z-index: 10;
+            border-radius: 50%;
+        }
+
+        /* --- 2. 相机视图 --- */
+        #camera-view {
+            background: #000;
+            z-index: 100;
+        }
+        #video-stream {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            top: 0; left: 0;
+            z-index: 1;
+        }
+        
+        /* 扫码 UI 覆盖层 (图2) */
+        .scan-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 2;
+            pointer-events: none;
+            /* 神奇的黑底去背法：滤色模式。如果是纯黑背景，会自动变透明，只留白字和蓝框 */
+            mix-blend-mode: screen; 
+        }
+
+        /* 相机层的返回按钮热区 (覆盖在图2左上角的返回箭头处) */
+        .back-trigger-btn {
+            position: absolute;
+            top: calc(15px + env(safe-area-inset-top));
+            left: 15px;
+            width: 50px;
+            height: 50px;
+            background: transparent;
+            z-index: 10;
+            border-radius: 50%;
+        }
+
+        /* 点击拍照的全局热区 */
+        .capture-trigger {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 5;
+        }
+
+        /* --- 3. 结果视图 --- */
+        #result-view {
+            background: rgba(0,0,0,0.9);
+            z-index: 200;
+            display: none;
+            justify-content: center;
+            align-items: center;
+        }
+        #result-view.active {
+            display: flex;
+        }
+        #result-view img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .close-hint {
+            position: absolute;
+            bottom: calc(30px + env(safe-area-inset-bottom));
+            color: rgba(255,255,255,0.6);
+            font-size: 14px;
+            text-align: center;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 1. 首页 (背景图 bg.jpg) -->
+    <div id="home-view" class="view active">
+        <img src="./bg.jpg" alt="学信网首页">
+        <div class="scan-trigger-btn" id="openCameraBtn"></div>
+    </div>
+
+    <!-- 2. 相机扫码页 -->
+    <div id="camera-view" class="view">
+        <!-- 真实的相机视频流 -->
+        <video id="video-stream" autoplay playsinline muted></video>
+        
+        <!-- 扫码UI前景 (图2 scan_ui.png) -->
+        <img src="./scan_ui.png" class="scan-overlay" alt="扫码框">
+        
+        <!-- 左上角返回按钮热区 -->
+        <div class="back-trigger-btn" id="closeCameraBtn"></div>
+        
+        <!-- 点击屏幕任意位置捕捉画面 -->
+        <div class="capture-trigger" id="captureBtn"></div>
+    </div>
+
+    <!-- 3. 认证报告图 (图3 image.jpg) -->
+    <div id="result-view" class="view">
+        <img src="./image.jpg" alt="认证报告">
+        <div class="close-hint">点击任意位置返回</div>
+    </div>
+
+    <script>
+        const homeView = document.getElementById('home-view');
+        const cameraView = document.getElementById('camera-view');
+        const resultView = document.getElementById('result-view');
+        
+        const openCameraBtn = document.getElementById('openCameraBtn');
+        const closeCameraBtn = document.getElementById('closeCameraBtn');
+        const captureBtn = document.getElementById('captureBtn');
+        const video = document.getElementById('video-stream');
+        
+        let stream = null;
+
+        // 1. 打开相机
+        async function startCamera() {
+            try {
+                // 请求后置摄像头
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' }
+                });
+                video.srcObject = stream;
+                
+                // 切换到相机视图
+                homeView.classList.remove('active');
+                cameraView.classList.add('active');
+            } catch (err) {
+                console.error("无法访问相机:", err);
+                alert("请允许访问相机权限，或确保您在 HTTPS 环境下运行。");
+            }
+        }
+
+        // 2. 关闭相机并返回首页
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop()); // 释放摄像头
+                stream = null;
+            }
+            cameraView.classList.remove('active');
+            homeView.classList.add('active');
+        }
+
+        // 3. 模拟扫码成功 (点击屏幕任意处)
+        function handleCapture() {
+            // 停止相机
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            // 切换到结果视图
+            cameraView.classList.remove('active');
+            resultView.classList.add('active');
+        }
+
+        // 4. 关闭结果视图，回首页
+        function closeResult() {
+            resultView.classList.remove('active');
+            homeView.classList.add('active');
+        }
+
+        // --- 事件绑定 ---
+        // 点击首页右上角扫码
+        openCameraBtn.addEventListener('click', startCamera);
+        // 点击相机左上角返回
+        closeCameraBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // 阻止触发 capture
+            stopCamera();
+        });
+        // 点击屏幕任意处 (扫码成功)
+        captureBtn.addEventListener('click', handleCapture);
+        // 点击结果图关闭
+        resultView.addEventListener('click', closeResult);
+
+        // 注册 Service Worker (用于 PWA 离线能力，部署后生效)
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW注册失败', err));
+            });
+        }
+    </script>
+</body>
+</html>
